@@ -919,7 +919,7 @@ def calculate_game_grade(game: "GameRow") -> Tuple[str, str]:
     """
     Auto-calculates a letter grade for Dansby's last game performance
     and uses the Anthropic API to generate an over-the-top one-line summary.
-    Returns (grade, summary_text).
+    Returns (grade, summary_text). Returns ("N/A", "") for DNP games.
     """
     b = game.batting or {}
     f = game.fielding or {}
@@ -933,40 +933,47 @@ def calculate_game_grade(game: "GameRow") -> Tuple[str, str]:
     dbls  = safe_int(b.get("doubles"))
     trpls = safe_int(b.get("triples"))
     errors = safe_int(f.get("errors"))
-    xbh   = hr + dbls + trpls  # extra base hits
+    hbp   = safe_int(b.get("hitByPitch"))
+    sf    = safe_int(b.get("sacFlies"))
+    sac   = safe_int(b.get("sacBunts"))
 
-    # Score from 0-100
-    score = 50  # baseline
-    score += hits * 8
-    score += hr * 15
+    # DNP: no plate appearances at all
+    pa = ab + bb + hbp + sf + sac
+    if pa == 0:
+        return "N/A", ""
+
+    score = 35  # below-average baseline
+    score += hits * 12
+    score += hr * 18           # extra credit on top of hit
+    score += dbls * 6          # extra credit on top of hit
+    score += trpls * 9         # extra credit on top of hit
     score += rbi * 6
     score += bb * 5
-    score += xbh * 5
-    score -= so * 5
-    score -= errors * 12
+    score -= so * 7
+    score -= errors * 15
     if hits == 0 and ab >= 3:
-        score -= 10
+        score -= 12            # 0-fer penalty
 
     score = max(0, min(100, score))
 
-    if score >= 90:   grade = "A+"
-    elif score >= 80: grade = "A"
+    if score >= 95:   grade = "A+"
+    elif score >= 82: grade = "A"
     elif score >= 70: grade = "B+"
-    elif score >= 60: grade = "B"
-    elif score >= 50: grade = "C+"
-    elif score >= 40: grade = "C"
-    elif score >= 30: grade = "D"
+    elif score >= 58: grade = "B"
+    elif score >= 46: grade = "C+"
+    elif score >= 35: grade = "C"
+    elif score >= 22: grade = "D"
     else:             grade = "F"
 
     # Build stat line for the AI prompt
     stat_line = f"{hits}-for-{ab}"
     extras = []
-    if hr:    extras.append(f"{hr} HR")
-    if dbls:  extras.append(f"{dbls} 2B")
-    if trpls: extras.append(f"{trpls} 3B")
-    if rbi:   extras.append(f"{rbi} RBI")
-    if bb:    extras.append(f"{bb} BB")
-    if so:    extras.append(f"{so} K")
+    if hr:     extras.append(f"{hr} HR")
+    if dbls:   extras.append(f"{dbls} 2B")
+    if trpls:  extras.append(f"{trpls} 3B")
+    if rbi:    extras.append(f"{rbi} RBI")
+    if bb:     extras.append(f"{bb} BB")
+    if so:     extras.append(f"{so} K")
     if errors: extras.append(f"{errors} E")
     if extras:
         stat_line += ", " + ", ".join(extras)
@@ -979,11 +986,18 @@ def calculate_game_grade(game: "GameRow") -> Tuple[str, str]:
 def _generate_grade_summary(grade: str, stat_line: str, score: int) -> str:
     """Calls the Anthropic API to generate a one-line over-the-top game summary."""
     try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            return f"Grade {grade} — {stat_line}."
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 100,
                 "messages": [{
                     "role": "user",
@@ -1569,7 +1583,72 @@ def send_test_email_now() -> None:
     send_gmail(SENDER_EMAIL, to_list, subject, text_body, html_body)
     print(f"Test email sent to: {', '.join(to_list)}")
 
+def recalculate_all_grades() -> None:
+    """
+    Re-fetches boxscore stats for every game in game_grades and applies the
+    current grading formula. DNP records (PA=0) are deleted; others get their
+    grade updated in place without changing sent_at.
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.cursor().execute(
+            "SELECT gamePk, game_date FROM game_grades ORDER BY game_date"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    print(f"Recalculating {len(rows)} game grades...")
+    updated = deleted = errors = 0
+
+    for game_pk, game_date in rows:
+        try:
+            box = fetch_boxscore(game_pk)
+            found = find_player_in_boxscore(box, SWANSON_MLBAM_ID)
+            if not found:
+                conn = sqlite3.connect(DB_PATH)
+                try:
+                    conn.cursor().execute("DELETE FROM game_grades WHERE gamePk=?", (game_pk,))
+                    conn.commit()
+                finally:
+                    conn.close()
+                deleted += 1
+                print(f"  {game_date} pk={game_pk} — removed (not in boxscore)")
+                continue
+
+            batting, fielding = found
+            dummy = GameRow(gamePk=game_pk, game_date=game_date, opponent="", batting=batting, fielding=fielding)
+            grade, _ = calculate_game_grade(dummy)
+
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                if grade == "N/A":
+                    conn.cursor().execute("DELETE FROM game_grades WHERE gamePk=?", (game_pk,))
+                    deleted += 1
+                    print(f"  {game_date} pk={game_pk} — removed (DNP)")
+                else:
+                    conn.cursor().execute(
+                        "UPDATE game_grades SET grade=? WHERE gamePk=?",
+                        (grade, game_pk)
+                    )
+                    updated += 1
+                    print(f"  {game_date} pk={game_pk} — {grade}")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            log(f"recalculate_all_grades error pk={game_pk}: {e}")
+            print(f"  {game_date} pk={game_pk} — ERROR: {e}")
+            errors += 1
+
+    print(f"\nDone: {updated} updated, {deleted} removed (DNP/missing), {errors} errors.")
+
+
 def main() -> None:
+    import sys
+    if "--recalculate-grades" in sys.argv:
+        recalculate_all_grades()
+        return
     init_db()
     today = date.today()
     if today < EARLIEST_SEND_DATE and not TEST_MODE:
