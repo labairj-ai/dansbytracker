@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+token.json
+credentials.json
+swanson_digest.sqlite
+*.log
+out/
+.env
+.DS_Store
