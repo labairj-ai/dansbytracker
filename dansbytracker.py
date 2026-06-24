@@ -399,15 +399,38 @@ def load_recent_games_with_swanson(today: date, lookback_days: int) -> List[Game
     log(f"load_recent_games: {len(deduped)} game(s) with Swanson (deduped from {len(rows)}).")
     return deduped
 
-def pick_unsent_anchor_game(today: date, lookback_days: int) -> Optional[GameRow]:
-    for r in load_recent_games_with_swanson(today, lookback_days):
+def pick_unsent_anchor_group(today: date, lookback_days: int) -> List[GameRow]:
+    """Return all unsent games for the most recent unsent date (handles doubleheaders)."""
+    all_games = load_recent_games_with_swanson(today, lookback_days)
+    unsent: List[Tuple[date, GameRow]] = []
+    for r in all_games:
         try:
             gd = date.fromisoformat((r.game_date or "")[:10])
         except Exception:
             continue
         if gd < today and not was_sent(r.gamePk):
-            return r
-    return None
+            unsent.append((gd, r))
+    if not unsent:
+        return []
+    target_date = max(gd for gd, _ in unsent)
+    return [r for gd, r in unsent if gd == target_date]
+
+def merge_game_rows(games: List[GameRow]) -> GameRow:
+    """Merge multiple games (doubleheader) into one GameRow with summed stats."""
+    if len(games) == 1:
+        return games[0]
+    batting_keys = ("atBats","hits","homeRuns","rbi","baseOnBalls","strikeOuts",
+                    "doubles","triples","hitByPitch","sacFlies","sacBunts")
+    fielding_keys = ("putOuts","assists","errors","doublePlays")
+    merged_batting = {k: sum(safe_int((g.batting or {}).get(k)) for g in games) for k in batting_keys}
+    merged_fielding = {k: sum(safe_int((g.fielding or {}).get(k)) for g in games) for k in fielding_keys}
+    return GameRow(
+        gamePk=games[0].gamePk,
+        game_date=games[0].game_date,
+        opponent=games[0].opponent,
+        batting=merged_batting,
+        fielding=merged_fielding,
+    )
 
 # -------------------------
 # Spring Training cumulative stats
@@ -1246,7 +1269,11 @@ def build_ops_chart(recent_newest_first: List[GameRow], ss_ranked: Optional[List
 # -------------------------
 # Email build
 # -------------------------
-def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
+def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str, str, str]:
+    is_dh = len(anchor_games) > 1
+    game = merge_game_rows(anchor_games)
+    dh_pks = {g.gamePk for g in anchor_games}
+    recent_for_rolling = [game] + [r for r in recent if r.gamePk not in dh_pks]
     today = date.today()
     in_st = is_spring_training(today)
 
@@ -1268,7 +1295,7 @@ def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
         offense_html = render_st_stats_html(st)
         insight: List[str] = []
     else:
-        roll_rows = build_roll_rows(recent)
+        roll_rows = build_roll_rows(recent_for_rolling)
         offense_text = render_table_text(roll_rows)
         offense_html = render_table_html(roll_rows, qoc=statcast_qoc, avgs=ss_qoc_avgs)
         insight = build_daily_insight(roll_rows)
@@ -1295,19 +1322,28 @@ def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
     fielding_season = fetch_fielding_stats() if not in_st else None
     situation_stats = get_situation_stats() if not in_st else {}
     dnp_count = get_dnp_count(today) if not in_st else 0
-    game_grade, grade_summary = calculate_game_grade(game) if not in_st else ("N/A", "")
-    if game_grade != "N/A":
-        save_game_grade(game.gamePk, game.game_date, game_grade)
+    if not in_st:
+        dh_grades = []
+        for ag in anchor_games:
+            gr, gs = calculate_game_grade(ag)
+            if gr != "N/A":
+                save_game_grade(ag.gamePk, ag.game_date, gr)
+            dh_grades.append((gr, gs))
+        game_grade, grade_summary = dh_grades[0]
+    else:
+        dh_grades = [("N/A", "")]
+        game_grade, grade_summary = "N/A", ""
     grade_tally = get_grade_tally() if not in_st else {}
     monthly_grades = get_monthly_grade_summary() if not in_st else []
 
-    subject = f"Dansby Swanson Digest — {game.game_date} vs {game.opponent}"
+    dh_label = " (DH)" if is_dh else ""
+    subject = f"Dansby Swanson Digest — {game.game_date} vs {game.opponent}{dh_label}"
 
     # TEXT
     text = [accolades_text.rstrip(), ""]
     if insight:
         text += ["Daily Insight:"] + [f"- {b}" for b in insight] + [""]
-    text += [f"Dansby Swanson — {game.game_date} vs {game.opponent}", "",
+    text += [f"Dansby Swanson — {game.game_date} vs {game.opponent}{dh_label}", "",
              "Last game defense (traditional):", f"- {fielding_line}", "",
              offense_text.rstrip(), "",
              "Runners in Scoring Position (AVG):",
@@ -1317,7 +1353,11 @@ def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
              f"Shortstop OPS Rankings (min {SS_MIN_AB} AB):"]
     text += [f"  #{i+1} {p['name']}: {p['ops']} ({p['ab']} AB)" if not p['is_dansby'] else f"  ▶ #{i+1} {p['name']}: {p['ops']} ({p['ab']} AB) <- Dansby" for i, p in enumerate(ss_ranked)]
     text += [""]
-    if game_grade != "N/A":
+    if is_dh:
+        for idx, (gr, gs) in enumerate(dh_grades, 1):
+            if gr != "N/A":
+                text += [f"Game {idx} Grade: {gr}", f"  {gs}", ""]
+    elif game_grade != "N/A":
         text += [f"Game Grade: {game_grade}", f"  {grade_summary}", ""]
     if grade_tally:
         grade_order = ["A+","A","B+","B","C+","C","D","F"]
@@ -1363,17 +1403,29 @@ def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
     ) if adv else ""
 
     # Game grade HTML
-    grade_color = {
+    _grade_colors = {
         "A+": "#1a7a1a", "A": "#2e8b2e", "B+": "#4a9e4a", "B": "#6aaa6a",
         "C+": "#b8860b", "C": "#cc9900", "D": "#cc5500", "F": "#cc0000"
-    }.get(game_grade, "#555555")
-
-    game_grade_html = (
-        f"<div style='margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:8px;background:#fafafa;'>"
-        f"<span style='font-size:18px;font-weight:bold;color:{grade_color};'>Game Grade: {escape_html(game_grade)}</span>"
-        f"<span style='margin-left:12px;font-size:13px;color:#333;font-style:italic;'>{escape_html(grade_summary)}</span>"
-        f"</div>"
-    ) if game_grade != "N/A" else ""
+    }
+    if is_dh:
+        game_grade_html = ""
+        for idx, (gr, gs) in enumerate(dh_grades, 1):
+            if gr != "N/A":
+                gc = _grade_colors.get(gr, "#555555")
+                game_grade_html += (
+                    f"<div style='margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:8px;background:#fafafa;'>"
+                    f"<span style='font-size:18px;font-weight:bold;color:{gc};'>Game {idx} Grade: {escape_html(gr)}</span>"
+                    f"<span style='margin-left:12px;font-size:13px;color:#333;font-style:italic;'>{escape_html(gs)}</span>"
+                    f"</div>"
+                )
+    else:
+        grade_color = _grade_colors.get(game_grade, "#555555")
+        game_grade_html = (
+            f"<div style='margin:10px 0;padding:12px;border:1px solid #ddd;border-radius:8px;background:#fafafa;'>"
+            f"<span style='font-size:18px;font-weight:bold;color:{grade_color};'>Game Grade: {escape_html(game_grade)}</span>"
+            f"<span style='margin-left:12px;font-size:13px;color:#333;font-style:italic;'>{escape_html(grade_summary)}</span>"
+            f"</div>"
+        ) if game_grade != "N/A" else ""
 
     # Grade tally HTML
     grade_tally_html = ""
@@ -1497,7 +1549,7 @@ def build_email(game: GameRow, recent: List[GameRow]) -> Tuple[str, str, str]:
     <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.4;">
       {accolades_html}
       {insight_html}
-      <h2 style="margin:0 0 8px 0;">Dansby Swanson — {escape_html(game.game_date)} vs {escape_html(game.opponent)}</h2>
+      <h2 style="margin:0 0 8px 0;">Dansby Swanson — {escape_html(game.game_date)} vs {escape_html(game.opponent)}{escape_html(dh_label)}</h2>
       <h3 style="margin:10px 0 6px 0;">Last game defense (traditional)</h3>
       <div style="margin:0 0 10px 0;">{escape_html(fielding_line)}</div>
 
@@ -1577,7 +1629,7 @@ def send_test_email_now() -> None:
         anchor = GameRow(gamePk=999999999, game_date=today.isoformat(), opponent="TEST OPPONENT", batting={}, fielding={})
         recent = []
 
-    subject, text_body, html_body = build_email(anchor, recent)
+    subject, text_body, html_body = build_email([anchor], recent)
     subject = "[TEST EMAIL] " + subject
     to_list = TEST_TO_EMAILS or ["robertjsherman1@gmail.com"]
     send_gmail(SENDER_EMAIL, to_list, subject, text_body, html_body)
@@ -1657,15 +1709,17 @@ def main() -> None:
     if TEST_MODE:
         send_test_email_now()
         return
-    anchor = pick_unsent_anchor_game(today, SEND_LOOKBACK_DAYS)
-    if not anchor:
+    anchor_games = pick_unsent_anchor_group(today, SEND_LOOKBACK_DAYS)
+    if not anchor_games:
         print(f"No new Cubs game with Swanson in last {SEND_LOOKBACK_DAYS} days. Check dansbytracker.log.")
         return
     recent = load_recent_games_with_swanson(today, ROLLING_LOOKBACK_DAYS)
-    subject, text_body, html_body = build_email(anchor, recent)
+    subject, text_body, html_body = build_email(anchor_games, recent)
     send_gmail(SENDER_EMAIL, RECIPIENTS, subject, text_body, html_body)
-    mark_sent(anchor.gamePk)
-    print(f"Sent digest for gamePk={anchor.gamePk} to {len(RECIPIENTS)} recipients.")
+    for ag in anchor_games:
+        mark_sent(ag.gamePk)
+    pks = [ag.gamePk for ag in anchor_games]
+    print(f"Sent digest for gamePk={pks} to {len(RECIPIENTS)} recipients.")
 
 if __name__ == "__main__":
     main()
