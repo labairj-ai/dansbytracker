@@ -393,14 +393,17 @@ def load_recent_games_with_swanson(today: date, lookback_days: int) -> List[Game
         if not game_pk:
             continue
         game_date_str = (g.get("officialDate") or (g.get("gameDate") or "")[:10] or "")
-        # Hard filter: skip any pre-Opening Day game once regular season has started
-        if not is_spring_training(today):
-            try:
-                if date.fromisoformat(game_date_str) < REGULAR_SEASON_START:
-                    log(f"Skipping pre-RS game {game_pk} ({game_date_str})")
-                    continue
-            except Exception:
-                pass
+        # Hard filter: skip future-dated and pre-Opening Day games
+        try:
+            game_date_obj = date.fromisoformat(game_date_str)
+            if game_date_obj > today:
+                log(f"Skipping future-dated game {game_pk} ({game_date_str})")
+                continue
+            if not is_spring_training(today) and game_date_obj < REGULAR_SEASON_START:
+                log(f"Skipping pre-RS game {game_pk} ({game_date_str})")
+                continue
+        except Exception:
+            pass
         try:
             box = fetch_boxscore(int(game_pk))
         except Exception as e:
@@ -1218,6 +1221,13 @@ def build_ops_chart(recent_newest_first: List[GameRow], ss_ranked: Optional[List
         cumulative = {k: 0 for k in ("atBats","hits","homeRuns","doubles","triples",
                                       "baseOnBalls","hitByPitch","sacFlies")}
 
+        # Seed cumulative from all games outside the plot window so the chart
+        # shows season-to-date OPS evolving, not a reset-to-zero at game 1.
+        for g_seed in recent_newest_first[30:]:
+            b_seed = g_seed.batting or {}
+            for k in cumulative:
+                cumulative[k] += safe_int(b_seed.get(k))
+
         for g in games:
             try:
                 dt = date.fromisoformat((g.game_date or "")[:10])
@@ -1275,6 +1285,7 @@ def build_ops_chart(recent_newest_first: List[GameRow], ss_ranked: Optional[List
         ax.set_ylabel("OPS", fontsize=9)
         ax.yaxis.set_major_formatter(plt.FuncFormatter(
             lambda x, _: f"{x:.3f}".replace("0.", ".")))
+        ax.set_xlim(dates[0] - timedelta(days=1), dates[-1] + timedelta(days=1))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %-d"))
         ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
         plt.xticks(rotation=30, fontsize=8)
@@ -1300,8 +1311,21 @@ def build_ops_chart(recent_newest_first: List[GameRow], ss_ranked: Optional[List
 def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str, str, str]:
     is_dh = len(anchor_games) > 1
     game = merge_game_rows(anchor_games)
-    dh_pks = {g.gamePk for g in anchor_games}
-    recent_for_rolling = [game] + [r for r in recent if r.gamePk not in dh_pks]
+    if is_dh:
+        # Replace the individual DH game entries with the single merged game,
+        # preserving the newest-first sort order of the list.
+        dh_pks = {g.gamePk for g in anchor_games}
+        recent_for_rolling = []
+        merged_inserted = False
+        for r in recent:
+            if r.gamePk in dh_pks:
+                if not merged_inserted:
+                    recent_for_rolling.append(game)
+                    merged_inserted = True
+            else:
+                recent_for_rolling.append(r)
+    else:
+        recent_for_rolling = recent
     today = date.today()
     in_st = is_spring_training(today)
 
@@ -1339,7 +1363,7 @@ def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str
             )
 
     # Generate OPS trend chart (regular season only)
-    ops_chart_b64 = build_ops_chart(recent, ss_ranked=ss_ranked) if not in_st and recent else None
+    ops_chart_b64 = build_ops_chart(recent_for_rolling, ss_ranked=ss_ranked) if not in_st and recent_for_rolling else None
 
     risp_season = get_risp_avg("season")
     risp_career  = get_risp_avg("career")
