@@ -451,7 +451,8 @@ def merge_game_rows(games: List[GameRow]) -> GameRow:
     if len(games) == 1:
         return games[0]
     batting_keys = ("atBats","hits","homeRuns","rbi","baseOnBalls","strikeOuts",
-                    "doubles","triples","hitByPitch","sacFlies","sacBunts")
+                    "doubles","triples","hitByPitch","sacFlies","sacBunts",
+                    "runs","stolenBases","caughtStealing","groundIntoDoublePlay")
     fielding_keys = ("putOuts","assists","errors","doublePlays")
     merged_batting = {k: sum(safe_int((g.batting or {}).get(k)) for g in games) for k in batting_keys}
     merged_fielding = {k: sum(safe_int((g.fielding or {}).get(k)) for g in games) for k in fielding_keys}
@@ -946,6 +947,102 @@ def build_daily_insight(roll_rows) -> List[str]:
         return [f"OPS trend: Last 10 ({fmt_avg(ops10)}) vs Last 30 ({fmt_avg(ops30)}) — {'+'if d>=0 else ''}{d:.3f}"]
     return []
 
+def build_last_game_summary(game: GameRow, game_count: int = 1) -> Dict[str, str]:
+    """Summarize Dansby's offensive, defensive, and overall box-score impact."""
+    b = game.batting or {}
+    f = game.fielding or {}
+
+    ab = safe_int(b.get("atBats"))
+    hits = safe_int(b.get("hits"))
+    doubles = safe_int(b.get("doubles"))
+    triples = safe_int(b.get("triples"))
+    home_runs = safe_int(b.get("homeRuns"))
+    rbi = safe_int(b.get("rbi"))
+    runs = safe_int(b.get("runs"))
+    walks = safe_int(b.get("baseOnBalls"))
+    hbp = safe_int(b.get("hitByPitch"))
+    strikeouts = safe_int(b.get("strikeOuts"))
+    stolen_bases = safe_int(b.get("stolenBases"))
+    caught_stealing = safe_int(b.get("caughtStealing"))
+    gidp = safe_int(b.get("groundIntoDoublePlay"))
+
+    putouts = safe_int(f.get("putOuts"))
+    assists = safe_int(f.get("assists"))
+    errors = safe_int(f.get("errors"))
+    double_plays = safe_int(f.get("doublePlays"))
+    chances = putouts + assists + errors
+
+    extras = []
+    for value, label in (
+        (home_runs, "HR"), (doubles, "2B"), (triples, "3B"), (rbi, "RBI"),
+        (runs, "run" if runs == 1 else "runs"), (walks, "BB"), (hbp, "HBP"),
+        (stolen_bases, "SB"), (strikeouts, "K"),
+    ):
+        if value:
+            extras.append(f"{value} {label}")
+    stat_line = f"{hits}-for-{ab}" + (f" with {', '.join(extras)}" if extras else "")
+
+    if home_runs or rbi >= 2 or hits >= 3:
+        offense_impact = "He was a major positive offensive contributor."
+    elif hits >= 2 or rbi or runs or walks + hbp >= 2:
+        offense_impact = "He made a positive offensive contribution."
+    elif hits == 0 and ab >= 3:
+        negatives = []
+        if strikeouts:
+            negatives.append(f"striking out {strikeouts} time{'s' if strikeouts != 1 else ''}")
+        if gidp:
+            negatives.append(f"grounding into {gidp} double play{'s' if gidp != 1 else ''}")
+        offense_impact = "He had a negative offensive impact, producing no hits"
+        offense_impact += (" and " + " and ".join(negatives) if negatives else "") + "."
+    else:
+        offense_impact = "His offensive impact was limited."
+    if caught_stealing:
+        offense_impact = offense_impact.rstrip(".") + (
+            f", and he was caught stealing {caught_stealing} time{'s' if caught_stealing != 1 else ''}."
+        )
+    offense = f"Dansby went {stat_line}. {offense_impact}"
+
+    if errors:
+        defense_impact = (
+            f"He committed {errors} error{'s' if errors != 1 else ''}, "
+            "which made his defensive impact negative despite his other work in the field."
+        )
+    elif chances:
+        defense_impact = (
+            f"He handled all {chances} recorded chance{'s' if chances != 1 else ''} cleanly"
+            + (f" and helped turn {double_plays} double play{'s' if double_plays != 1 else ''}" if double_plays else "")
+            + ", giving him a positive defensive contribution."
+        )
+    else:
+        defense_impact = "He had no recorded defensive chances, so his defensive impact was neutral in the box score."
+    defense = (
+        f"{putouts} putout{'s' if putouts != 1 else ''}, "
+        f"{assists} assist{'s' if assists != 1 else ''}, "
+        f"{errors} error{'s' if errors != 1 else ''}. {defense_impact}"
+    )
+
+    positive_offense = bool(home_runs or rbi >= 2 or hits >= 2 or rbi or runs or walks + hbp >= 2)
+    negative_offense = hits == 0 and ab >= 3
+    if positive_offense and errors:
+        overall = "Overall, his offensive production was offset by a defensive mistake."
+    elif errors:
+        overall = "Overall, the defensive error outweighed a limited offensive contribution."
+    elif negative_offense and chances:
+        overall = "Overall, clean defense softened an unproductive day at the plate."
+    elif negative_offense:
+        overall = "Overall, he had limited positive impact in the game."
+    elif positive_offense:
+        overall = "Overall, he helped the Cubs with his bat and avoided giving value back in the field."
+    elif chances:
+        overall = "Overall, his clearest contribution came from steady, error-free defense."
+    else:
+        overall = "Overall, his measurable impact was limited."
+
+    if game_count > 1:
+        overall = f"Across the {game_count}-game doubleheader, " + overall.removeprefix("Overall, ")
+    return {"offense": offense, "defense": defense, "overall": overall}
+
+
 # -------------------------
 # High leverage & late/close splits
 # -------------------------
@@ -1370,6 +1467,7 @@ def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str
     ss_ranked = get_ss_ops_ranked()
     f = game.fielding or {}
     fielding_line = f"PO {safe_int(f.get('putOuts'))}, A {safe_int(f.get('assists'))}, E {safe_int(f.get('errors'))}"
+    last_game_summary = build_last_game_summary(game, len(anchor_games))
     adv = get_advanced_defense()
     fielding_season = fetch_fielding_stats() if not in_st else None
     situation_stats = get_situation_stats() if not in_st else {}
@@ -1396,6 +1494,10 @@ def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str
     if insight:
         text += ["Daily Insight:"] + [f"- {b}" for b in insight] + [""]
     text += [f"Dansby Swanson — {game.game_date} vs {game.opponent}{dh_label}", "",
+             "Last Game Summary:",
+             f"- Offense: {last_game_summary['offense']}",
+             f"- Defense: {last_game_summary['defense']}",
+             f"- Impact: {last_game_summary['overall']}", "",
              "Last game defense (traditional):", f"- {fielding_line}", "",
              offense_text.rstrip(), "",
              "Runners in Scoring Position (AVG):",
@@ -1447,6 +1549,15 @@ def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str
         "<h3 style='margin:10px 0 6px 0;'>Daily Insight</h3><ul style='margin:0 0 10px 18px;padding:0;'>"
         + "".join(f"<li>{escape_html(b)}</li>" for b in insight) + "</ul>"
     ) if insight else ""
+
+    last_game_summary_html = (
+        "<div style='padding:12px;border:1px solid #ddd;border-radius:8px;background:#f7f9fc;margin:10px 0;'>"
+        "<h3 style='margin:0 0 8px 0;'>Last Game Summary</h3>"
+        f"<div style='margin-bottom:6px;'><b>Offense:</b> {escape_html(last_game_summary['offense'])}</div>"
+        f"<div style='margin-bottom:6px;'><b>Defense:</b> {escape_html(last_game_summary['defense'])}</div>"
+        f"<div><b>Impact:</b> {escape_html(last_game_summary['overall'])}</div>"
+        "</div>"
+    )
 
     adv_html = (
         "<h3 style='margin:10px 0 6px 0;'>Advanced defense (season-to-date)</h3>"
@@ -1602,6 +1713,7 @@ def build_email(anchor_games: List[GameRow], recent: List[GameRow]) -> Tuple[str
       {accolades_html}
       {insight_html}
       <h2 style="margin:0 0 8px 0;">Dansby Swanson — {escape_html(game.game_date)} vs {escape_html(game.opponent)}{escape_html(dh_label)}</h2>
+      {last_game_summary_html}
       <h3 style="margin:10px 0 6px 0;">Last game defense (traditional)</h3>
       <div style="margin:0 0 10px 0;">{escape_html(fielding_line)}</div>
 

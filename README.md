@@ -8,6 +8,7 @@ Daily email digest tracking Dansby Swanson's performance with the Chicago Cubs. 
 
 - **Rolling batting splits** — Last game, last 10, last 30, and full season totals (AB, H, HR, RBI, AVG, OBP, SLG, OPS)
 - **Doubleheader support** — Both games are aggregated into a single digest with combined stats and individual game grades
+- **Last game summary** — Plain-language offensive, defensive, and overall impact recap from the latest box score
 - **Game grade** — Automatic A+–F letter grade per game with an AI-generated one-liner via the Anthropic API
 - **Season & monthly grade tallies** — Running scoreboard of how many A's, B's, C's, D's, and F's Dansby has earned
 - **OPS trend chart** — Season-to-date cumulative OPS line chart across the last 30 games with SS median reference line, embedded as a PNG in the email
