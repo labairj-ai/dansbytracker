@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dansbytracker</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/ai_lab/Desktop/dansbytracker &amp;&amp; source venv/bin/activate &amp;&amp; SENDER_EMAIL=labairj@gmail.com SAVANT_OAA_CSV_URL=/Users/ai_lab/Desktop/dansbytracker/outs_above_average.csv SAVANT_FRV_CSV_URL=/Users/ai_lab/Desktop/dansbytracker/fielding_run_value.csv python3 dansbytracker.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ai_lab/Desktop/dansbytracker</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/ai_lab/Desktop/dansbytracker/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ai_lab/Desktop/dansbytracker/launchd.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
