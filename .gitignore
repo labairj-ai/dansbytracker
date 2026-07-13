@@ -8,3 +8,5 @@ swanson_digest.sqlite
 out/
 .env
 .DS_Store
+*.save
+*.rtf

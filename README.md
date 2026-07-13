@@ -4,6 +4,17 @@ Daily email digest tracking Dansby Swanson's performance with the Chicago Cubs. 
 
 ---
 
+## Deployment
+
+**Runs on the `optiplex` home server** (Ubuntu 24.04, since 2026-07-12) — this Mac copy is for development.
+
+- Repo on server: `/home/optiplex/dansbytracker`, venv (Python 3.12) built from `requirements.txt`
+- Schedule: systemd `dansbytracker.timer` → `dansbytracker.service`, daily 7:00 AM ET with `Persistent=true` (catches up after downtime)
+- Env vars (`SENDER_EMAIL`, Savant CSV paths) live in the service unit; logs append to `launchd.log` on the server
+- The old Mac launchd agent is archived in `launchd/disabled-on-mac/` (it was vulnerable to macOS TCC Desktop restrictions anyway)
+
+---
+
 ## Features
 
 - **Rolling batting splits** — Last game, last 10, last 30, and full season totals (AB, H, HR, RBI, AVG, OBP, SLG, OPS)
