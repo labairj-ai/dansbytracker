@@ -126,6 +126,43 @@ DANSBY_ACCOLADES = [
     "A pitcher threw him a cookie and Dansby let it pass, apparently saving it for later.",
     "His OPS+ is aggressively in the double digits. Aggressively.",
     "Dansby Swanson: bringing the same energy to every at-bat regardless of the score, the inning, or the laws of baseball.",
+    "According to advanced metrics, Dansby saves 15 runs a year with his glove. He then personally gives most of them back with his bat.",
+    "He has 7 Outs Above Average this season. The stat that counts toward runs scored is a different one.",
+    "Dansby is a positive WAR player. This is technically true and also the saddest context-free fact you'll hear today.",
+    "Every scout who signed off on this contract is currently watching Dansby's at-bats from a different room.",
+    "He made an incredible diving stop and threw to first by a half-step. A different Dansby then batted and grounded into a double play.",
+    "Dansby Swanson is proof that you can be beloved, Gold Glove caliber, and still make pitchers feel like they're cheating.",
+    "His strikeout-to-walk ratio is that of a man who knows exactly what he doesn't like but is still working on the rest.",
+    "He swung through a 91 mph fastball right down the middle. He looked very committed to the decision.",
+    "The NL Central has been informed that Dansby Swanson is threatening. They have not updated their notes.",
+    "He reached base twice today. Once via walk, once via error. The bat is still loading.",
+    "Dansby has not met a high fastball he couldn't take for a called strike.",
+    "His OBP would be higher if called third strikes counted. They do not. This is a structural problem for Dansby.",
+    "The Cubs broadcast has mentioned Dansby's defensive contributions so many times they've started inventing new ways to say it.",
+    "He hit a line drive today — directly to the center fielder, who caught it while standing still. Exit velo was great though.",
+    "Dansby is listed as day-to-day by his own bat.",
+    "He played 162 games last year. His bat sat out a few.",
+    "Somewhere a pitcher has Dansby's batting average tattooed on his forearm as a motivational reminder.",
+    "His RISP average this season could generously be described as 'building character for future Dansby.'",
+    "Dansby Swanson at the plate is like watching someone very confidently do the wrong thing.",
+    "He walked in a key spot today and the Cubs announcer called it 'a big moment.' They were not wrong about the context.",
+    "The Cubs would be perfectly fine if Dansby hit .240. He seems uninterested in finding out what that feels like.",
+    "His swing rate on pitches outside the zone is down this year. His swing rate on pitches he simply cannot hit remains robust.",
+    "He grounded out to the second baseman to end the inning. The second baseman did not need to move.",
+    "Dansby has more career Gold Gloves than career OPS+ seasons above 100. The math here is doing a lot of heavy lifting.",
+    "The Cubs signed him for seven years because he does everything right. Hitting is apparently a technicality.",
+    "He popped up in foul territory today. The catcher caught it without breaking a sweat, which tells you something.",
+    "Dansby's approach: see the ball, recognize the pitch, decide not to swing, watch strike three. Repeat.",
+    "He's been described as a clubhouse leader. In the batter's box, leadership has been harder to locate.",
+    "His wRC+ is a number you'd be embarrassed to whisper in a library.",
+    "Dansby stepped in with the game on the line against the opposing closer. The closer's ERA went down.",
+    "He's on pace to finish the year with fewer RBI than Dansby Swanson would have if Dansby Swanson were hitting.",
+    "The pitcher threw him a 2-0 fastball, which scouts call a 'hitter's count.' Dansby did not get the memo.",
+    "Baseball Reference lists his WAR as a positive number. One of those contributions is defense. The other is persistence.",
+    "He was hit by a pitch today. It was his most productive plate appearance of the week and he seemed to know it.",
+    "Dansby's spray chart looks like the ball is actively avoiding the outfield grass on his behalf.",
+    "He fouled off six pitches in the at-bat before striking out. The crowd appreciated the effort. Results pending.",
+    "The Cubs front office printed Dansby's glove metrics on a banner. They left space where the offense numbers would go.",
 ]
 
 # -------------------------
@@ -271,14 +308,14 @@ def pick_accolades(n: int = 5) -> List[str]:
         cur.execute("CREATE TABLE IF NOT EXISTS used_accolades (accolade TEXT PRIMARY KEY, used_at TEXT)")
         # Get recently used
         used = {r[0] for r in cur.execute("SELECT accolade FROM used_accolades").fetchall()}
-        # Get available (not recently used)
+        # Get available (not yet used in this cycle)
         available = [a for a in DANSBY_ACCOLADES if a not in used]
-        # If we've used most of them, reset and start fresh
-        if len(available) < n:
+        # Reset only when the full list is exhausted — true cycle, no early repeats
+        if not available:
             cur.execute("DELETE FROM used_accolades")
             conn.commit()
             available = list(DANSBY_ACCOLADES)
-        # Pick n random from available
+        # Pick n random from available (may be fewer than n at end of cycle)
         picks = random.sample(available, k=min(n, len(available)))
         # Mark as used
         now = datetime.utcnow().isoformat() + "Z"
