@@ -909,7 +909,7 @@ def load_csv_rows(src: str) -> List[Dict[str, str]]:
     return list(csv.DictReader(io.StringIO(text)))
 
 def find_swanson_row(rows):
-    keys=("player_name","Name","name","player","Player","playerName")
+    keys=("player_name","Name","name","player","Player","playerName","last_name, first_name")
     for row in rows:
         for k in keys:
             v=row.get(k,"")
@@ -923,7 +923,7 @@ def get_advanced_defense() -> Dict[str, str]:
     out={}
     for url_var, key_list, label in [
         (SAVANT_OAA_CSV_URL, ("oaa","OAA","outs_above_average","OAA_total"), "OAA"),
-        (SAVANT_FRV_CSV_URL, ("frv","FRV","fielding_run_value","Fielding Run Value"), "Fielding Run Value"),
+        (SAVANT_FRV_CSV_URL, ("frv","FRV","fielding_run_value","Fielding Run Value","fielding_runs_prevented"), "Fielding Run Value"),
     ]:
         if url_var:
             try:
